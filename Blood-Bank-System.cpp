@@ -1,1216 +1,1097 @@
 #include <iostream>
-#include <string>
 #include <vector>
-#include <limits>
-#include <iomanip>
-#include <cctype>
-#include <stdexcept>
+#include <string>
+#include <fstream>
+#include <sstream>
 #include <algorithm>
+#include <limits>
 #include <ctime>
+#include <cctype>
+#include <map>
 
 using namespace std;
 
-class BloodBankException : public runtime_error {
-public:
-    explicit BloodBankException(const string& message) : runtime_error(message) {}
-};
 
-class ValidationException : public BloodBankException {
-public:
-    explicit ValidationException(const string& message) : BloodBankException("Validation Error: " + message) {}
-};
+const string USERS_FILE = "users.txt";
+const string BLOOD_FILE = "blood_inventory.txt";
+const string REQUESTS_FILE = "blood_requests.txt";
+const string ACTIVITY_LOG_FILE = "activity_log.txt";
 
-class AuthenticationException : public BloodBankException {
-public:
-    explicit AuthenticationException(const string& message) : BloodBankException("Authentication Error: " + message) {}
-};
+const vector<string> VALID_BLOOD_TYPES = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"};
+const vector<string> VALID_ROLES = {"Admin", "Donor", "Requestor"};
 
-namespace Validation {
-    bool isValidString(const std::string& str);
-    bool isAlphanumeric(const std::string& str);
-    bool isValidInteger(int value);
-    bool isValidDate(const std::string& date);
-    bool isValidBloodType(const std::string& bloodType);
-    bool isValidPassword(const std::string& password);
-    void clearInputBuffer();
-    int getIntegerInput();
-    std::string getStringInput(const std::string& prompt);
-    std::string getPasswordInput(const std::string& prompt);
-}
 
-class ValidationStrategy {
+class Utility {
 public:
-    virtual ~ValidationStrategy() = default;
-    virtual bool validate(const string& value) const = 0;
-};
+    
+    static string toUpper(const string& s) {
+        string result = s;
+        for (char& c : result) c = toupper(c);
+        return result;
+    }
 
-class AlphanumericValidation : public ValidationStrategy {
-public:
-    bool validate(const string& value) const override {
-        if (value.empty()) return false;
-        return all_of(value.begin(), value.end(), [](char c) { return isalnum(static_cast<unsigned char>(c)); });
+    
+    static string trim(const string& s) {
+        size_t start = s.find_first_not_of(" \t\r\n");
+        if (start == string::npos) return "";
+        size_t end = s.find_last_not_of(" \t\r\n");
+        return s.substr(start, end - start + 1);
+    }
+
+    
+    static bool isValidDate(const string& date) {
+        if (date.size() != 10) return false;
+        if (date[4] != '-' || date[7] != '-') return false;
+        string yearStr = date.substr(0,4);
+        string monthStr = date.substr(5,2);
+        string dayStr = date.substr(8,2);
+
+        if (!all_of(yearStr.begin(), yearStr.end(), ::isdigit)) return false;
+        if (!all_of(monthStr.begin(), monthStr.end(), ::isdigit)) return false;
+        if (!all_of(dayStr.begin(), dayStr.end(), ::isdigit)) return false;
+
+        int year = stoi(yearStr);
+        int month = stoi(monthStr);
+        int day = stoi(dayStr);
+
+        if (year < 1900 || year > 2100) return false;
+        if (month < 1 || month > 12) return false;
+
+        
+        int daysInMonth[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+        if ((year%4==0 && year%100!=0) || (year%400==0)) daysInMonth[1] = 29;
+
+        if (day < 1 || day > daysInMonth[month-1]) return false;
+        return true;
+    }
+
+   
+    static void pause() {
+        cout << "Press Enter to continue...";
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+
+    
+    static bool isNumeric(const string& s) {
+        return !s.empty() && all_of(s.begin(), s.end(), ::isdigit);
+    }
+
+    
+    static bool isValidBloodType(const string& bt) {
+        string upperBT = toUpper(bt);
+        return find(VALID_BLOOD_TYPES.begin(), VALID_BLOOD_TYPES.end(), upperBT) != VALID_BLOOD_TYPES.end();
+    }
+
+    
+    static bool isValidRole(const string& role) {
+        return find(VALID_ROLES.begin(), VALID_ROLES.end(), role) != VALID_ROLES.end();
+    }
+
+    
+    static string getCurrentDate() {
+        time_t t = time(nullptr);
+        tm* now = localtime(&t);
+        char buf[11];
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02d", now->tm_year+1900, now->tm_mon+1, now->tm_mday);
+        return string(buf);
+    }
+
+    
+    static vector<string> split(const string& s, char delimiter) {
+        vector<string> tokens;
+        string token;
+        istringstream tokenStream(s);
+        while (getline(tokenStream, token, delimiter)) {
+            tokens.push_back(token);
+        }
+        return tokens;
     }
 };
 
-class BloodTypeValidation : public ValidationStrategy {
+
+class Logger {
+private:
+    ofstream logFile;
+
 public:
-    bool validate(const string& bloodType) const override {
-        static const vector<string> validTypes = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"};
-        return find(validTypes.begin(), validTypes.end(), bloodType) != validTypes.end();
+    Logger() {
+        logFile.open(ACTIVITY_LOG_FILE, ios::app);
+        if (!logFile.is_open()) {
+            cout << "WARNING: Could not open activity log file.\n";
+        }
+    }
+
+    ~Logger() {
+        if (logFile.is_open()) logFile.close();
+    }
+
+    void log(const string& message) {
+        if (!logFile.is_open()) return;
+        string timestamp = Utility::getCurrentDate();
+        logFile << "[" << timestamp << "] " << message << endl;
+    }
+
+    
+    void displayLogs() const {
+        ifstream file(ACTIVITY_LOG_FILE);
+        if (!file.is_open()) {
+            cout << "No activity log found.\n";
+            return;
+        }
+        string line;
+        while (getline(file, line)) {
+            cout << line << endl;
+        }
+        file.close();
     }
 };
+
 
 class User {
 protected:
     string userID;
     string name;
     string contact;
-    string role;
     string password;
+    string role;
 
 public:
-    User(const string& id, const string& n, const string& c, const string& r, const string& p);
-    virtual ~User() = default;
-    string getUserID() const;
-    string getName() const;
-    string getContact() const;
-    string getRole() const;
-    bool authenticate(const string& pwd) const;
-    bool setUserID(const string& id);
-    bool setName(const string& n);
-    bool setContact(const string& c);
-    bool setRole(const string& r);
-    bool setPassword(const string& pwd);
-    virtual void displayUserInfo() const = 0; // Make this pure virtual
+    User(const string& id, const string& name, const string& contact, const string& password, const string& role)
+        : userID(id), name(name), contact(contact), password(password), role(role) {}
+
+    virtual ~User() {}
+
+    string getUserID() const { return userID; }
+    string getName() const { return name; }
+    string getContact() const { return contact; }
+    string getPassword() const { return password; }
+    string getRole() const { return role; }
+
+    void setName(const string& n) { name = n; }
+    void setContact(const string& c) { contact = c; }
+    void setPassword(const string& p) { password = p; }
+
+    virtual void displayUserInfo() const {
+        cout << "UserID: " << userID << "\nName: " << name << "\nContact: " << contact << "\nRole: " << role << "\n";
+    }
+
+    bool authenticate(const string& pass) const {
+        return password == pass;
+    }
 };
+
 
 class Donor : public User {
 private:
-    std::string bloodType;
+    string bloodType;
 
 public:
-    Donor(const std::string& id, const std::string& n, const std::string& c, const std::string& bt, const std::string& p);
-    std::string getBloodType() const;
-    bool setBloodType(const std::string& bt);
-    void displayUserInfo() const;
+    Donor(const string& id, const string& name, const string& contact, const string& password, const string& bloodType)
+        : User(id, name, contact, password, "Donor"), bloodType(bloodType) {}
+
+    string getBloodType() const { return bloodType; }
+    void setBloodType(const string& bt) { bloodType = bt; }
+
+    void displayUserInfo() const override {
+        User::displayUserInfo();
+        cout << "Blood Type: " << bloodType << "\n";
+    }
 };
 
-class AdminStaff : public User {
-public:
-    AdminStaff(const std::string& id, const std::string& n, const std::string& c, const std::string& p);
-    void displayUserInfo() const;
-};
 
-class Requestor : public User {
-public:
-    Requestor(const std::string& id, const std::string& n, const std::string& c, const std::string& p);
-    void displayUserInfo() const;
-};
-
-class BloodInventory {
+class BloodUnit {
 private:
-    std::string bloodType;
+    string bloodType;
     int quantity;
-    std::string donationDate;
+    string donationDate;
+    string donorName; 
 
 public:
-    BloodInventory(const std::string& bt, int qty, const std::string& dd);
-    std::string getBloodType() const;
-    int getQuantity() const;
-    std::string getDonationDate() const;
-    bool setBloodType(const std::string& bt);
-    bool setQuantity(int qty);
-    bool setDonationDate(const std::string& dd);
-    void increaseQuantity(int qty);
-    void decreaseQuantity(int qty);
-    void displayBloodInfo() const;
-    bool isExpired(const std::string& currentDate) const;
+    BloodUnit() : bloodType(""), quantity(0), donationDate(""), donorName("") {}
+    BloodUnit(const string& bt, int qty, const string& date, const string& donor)
+        : bloodType(bt), quantity(qty), donationDate(date), donorName(donor) {}
+
+    string getBloodType() const { return bloodType; }
+    int getQuantity() const { return quantity; }
+    string getDonationDate() const { return donationDate; }
+    string getDonorName() const { return donorName; } 
+
+    void setBloodType(const string& bt) { bloodType = bt; }
+    void setQuantity(int qty) { quantity = qty; }
+    void setDonationDate(const string& date) { donationDate = date; }
+    void setDonorName(const string& donor) { donorName = donor; } 
+
+    void displayBloodInfo() const {
+        cout << "Blood Type: " << bloodType << "\nQuantity: " << quantity
+             << "\nDonation Date: " << donationDate
+             << "\nDonor Name: " << donorName << "\n"; 
+    }
 };
+
 
 class BloodRequest {
 private:
-    std::string requestID;
-    std::string requestorID;
-    std::string bloodType;
+    string requestID;
+    string requestorID;
+    string bloodType;
     int quantity;
-    std::string status;
-    std::string requestDate;
+    string requestDate;
+    string status; 
 
 public:
-    BloodRequest(const std::string& id, const std::string& reqID, const std::string& bt, int qty, const std::string& rd);
-    std::string getRequestID() const;
-    std::string getRequestorID() const;
-    std::string getBloodType() const;
-    int getQuantity() const;
-    std::string getStatus() const;
-    std::string getRequestDate() const;
-    bool setStatus(const std::string& st);
-    bool setBloodType(const std::string& bt);
-    bool setQuantity(int qty);
-    bool setRequestDate(const std::string& rd);
-    void displayRequestInfo() const;
+    BloodRequest() : requestID(""), requestorID(""), bloodType(""), quantity(0), requestDate(""), status("Pending") {}
+    BloodRequest(const string& reqID, const string& reqorID, const string& bt, int qty, const string& date, const string& stat = "Pending")
+        : requestID(reqID), requestorID(reqorID), bloodType(bt), quantity(qty), requestDate(date), status(stat) {}
+
+    string getRequestID() const { return requestID; }
+    string getRequestorID() const { return requestorID; }
+    string getBloodType() const { return bloodType; }
+    int getQuantity() const { return quantity; }
+    string getRequestDate() const { return requestDate; }
+    string getStatus() const { return status; }
+
+    void setStatus(const string& s) { status = s; }
+    void setQuantity(int q) { quantity = q; }
+
+    void displayRequestInfo() const {
+        cout << "Request ID: " << requestID << "\nRequestor ID: " << requestorID << "\nBlood Type: " << bloodType
+             << "\nQuantity: " << quantity << "\nRequest Date: " << requestDate << "\nStatus: " << status << "\n";
+    }
 };
 
-class UserManager {
-private:
-    std::vector<User*> users;
-
-public:
-    UserManager();
-    ~UserManager();
-    bool addUser(const std::string& role, const std::string& id, const std::string& name, const std::string& contact, const std::string& password, const std::string& bloodType = "");
-    User* getUserByID(const std::string& id);
-    std::vector<User*> getUsersByRole(const std::string& role) const;
-    void displayAllUsers() const;
-    bool updateUser(const std::string& id, const std::string& newName, const std::string& newContact);
-    bool deleteUser(const std::string& id);
-};
 
 class BloodBankSystem {
 private:
-    UserManager userManager;
-    std::vector<BloodInventory> bloodInventory;
-    std::vector<BloodRequest> bloodRequests;
-    User* loggedInUser;
+    vector<User*> users;
+    vector<BloodUnit> bloodInventory;
+    vector<BloodRequest> bloodRequests;
+
+    User* currentUser;
+    Logger logger;
 
 public:
-    BloodBankSystem();
-    bool addDonor(const std::string& id, const std::string& name, const std::string& contact, const std::string& bloodType, const std::string& password);
-    void viewDonors() const;
-    void searchDonorsByBloodType(const std::string& bloodType) const;
-    void searchDonorsByName(const std::string& name) const;
-    bool updateDonor(const std::string& id, const std::string& newName, const std::string& newContact, const std::string& newBloodType);
-    bool deleteDonor(const std::string& id);
-    bool addBlood(const std::string& bloodType, int quantity, const std::string& donationDate);
-    void viewBloodInventory() const;
-    void viewBloodAvailability(const std::string& bloodType) const;
-    bool updateBloodStock(const std::string& bloodType, int quantityChange);
-    bool deleteBlood(const std::string& bloodType, const std::string& donationDate);
-    bool addRequest(const std::string& requestorID, const std::string& bloodType, int quantity, const std::string& requestDate);
-    void viewRequests() const;
-    void viewRequestsByStatus(const std::string& status) const;
-    void viewRequestsByRequestor(const std::string& requestorId) const;
-    bool updateRequestStatus(const std::string& requestID, const std::string& newStatus);
-    bool updateRequest(const std::string& requestID, const std::string& newBloodType, int newQuantity, const std::string& newRequestDate);
-    bool deleteRequest(const std::string& requestID);
-    bool addUser(const std::string& role, const std::string& id, const std::string& name, const std::string& contact, const std::string& password);
-    User* getUserByID(const std::string& id);
-    void displayAllUsers() const;
-    bool updateUser(const std::string& id, const std::string& newName, const std::string& newContact);
-    bool deleteUser(const std::string& id);
-    bool loginUser(const std::string& id, const std::string& password);
-    void logoutUser();
-    User* getLoggedInUser() const;
-    bool registerRequestor(const std::string& id, const std::string& name, const std::string& contact, const std::string& password);
-    bool isBloodAvailable(const std::string& bloodType, int quantity) const;
-    void fulfillRequest(const std::string& requestID);
-    void removeExpiredBlood();
-    std::string getCurrentDate();
+    BloodBankSystem() : currentUser(nullptr) {
+        loadUsers();
+        loadBloodInventory();
+        loadBloodRequests();
+    }
+
+    ~BloodBankSystem() {
+        saveAllData();
+        for (User* user : users) delete user;
+        users.clear();
+    }
+
+    void run() {
+        while (true) {
+            cout << "\n--- Blood Bank Management System ---\n";
+            cout << "1. Login\n2. Register\n3. Exit\n";
+            int choice = getValidatedChoice(1,3);
+
+            if (choice == 1) {
+                if (login()) {
+                    logger.log("User " + currentUser->getUserID() + " logged in.");
+                    userMenu();
+                    logger.log("User " + currentUser->getUserID() + " logged out.");
+                    currentUser = nullptr;
+                }
+            } else if (choice == 2) {
+                registerUser();
+            } else {
+                cout << "Thank you for using the system. Goodbye!\n";
+                break;
+            }
+        }
+    }
+
+private:
+    
+    bool login() {
+        string id, pass;
+        cout << "Enter UserID: ";
+        getline(cin, id);
+        cout << "Enter Password: ";
+        getline(cin, pass);
+
+        for (User* user : users) {
+            if (user->getUserID() == id && user->authenticate(pass)) {
+                currentUser = user;
+                cout << "Login successful! Welcome, " << currentUser->getName() << " (" << currentUser->getRole() << ").\n";
+                return true;
+            }
+        }
+        cout << "Login failed. Invalid UserID or Password.\n";
+        return false;
+    }
+
+    void registerUser() {
+        cout << "--- User Registration ---\n";
+        string id;
+        while (true) {
+            cout << "Enter UserID (no spaces): ";
+            getline(cin, id);
+            id = Utility::trim(id);
+            if (id.empty()) {
+                cout << "UserID cannot be empty.\n";
+                continue;
+            }
+            if (find_if(users.begin(), users.end(), [&](User* u){return u->getUserID() == id;}) != users.end()) {
+                cout << "UserID already exists. Try another.\n";
+                continue;
+            }
+            break;
+        }
+
+        string name;
+        while (true) {
+            cout << "Enter Full Name: ";
+            getline(cin, name);
+            name = Utility::trim(name);
+            if (!name.empty()) break;
+            cout << "Name cannot be empty.\n";
+        }
+
+        string contact;
+        while (true) {
+            cout << "Enter Contact Number: ";
+            getline(cin, contact);
+            contact = Utility::trim(contact);
+            if (!contact.empty() && Utility::isNumeric(contact)) break;
+            cout << "Contact must be numeric and cannot be empty.\n";
+        }
+        string pass1, pass2;
+        while (true) {
+            cout << "Enter Password: ";
+            getline(cin, pass1);
+            cout << "Confirm Password: ";
+            getline(cin, pass2);
+            if (pass1 == pass2 && !pass1.empty()) break;
+            cout << "Passwords do not match or are empty. Try again.\n";
+        }
+
+        cout << "Choose Role:\n1. Admin\n2. Donor\n3. Requestor\n";
+        int roleChoice = getValidatedChoice(1,3);
+        string role = VALID_ROLES[roleChoice - 1];
+
+        if (role == "Donor") {
+            string bloodType;
+            while (true) {
+                cout << "Enter Blood Type (A+, A-, B+, B-, AB+, AB-, O+, O-): ";
+                getline(cin, bloodType);
+                bloodType = Utility::toUpper(Utility::trim(bloodType));
+                if (Utility::isValidBloodType(bloodType)) break;
+                cout << "Invalid blood type. Try again.\n";
+            }
+            users.push_back(new Donor(id, name, contact, pass1, bloodType));
+        } else {
+            users.push_back(new User(id, name, contact, pass1, role));
+        }
+        cout << "User registered successfully!\n";
+        logger.log("New user registered: " + id + " Role: " + role);
+        saveUsers();
+    }
+
+   
+    void userMenu() {
+        if (!currentUser) return;
+
+        if (currentUser->getRole() == "Admin") {
+            adminMenu();
+        } else if (currentUser->getRole() == "Donor") {
+            donorMenu();
+        } else if (currentUser->getRole() == "Requestor") {
+            requestorMenu();
+        } else {
+            cout << "Unknown role. Logging out.\n";
+        }
+    }
+
+    
+    void adminMenu() {
+        while (true) {
+            cout << "\n--- Admin Menu ---\n";
+            cout << "1. Manage Users\n2. Manage Blood Inventory\n3. Manage Blood Requests\n4. View Reports\n5. Logout\n";
+            int choice = getValidatedChoice(1,5);
+
+            switch (choice) {
+                case 1: manageUsers(); break;
+                case 2: manageBloodInventory(); break;
+                case 3: manageBloodRequests(); break;
+                case 4: viewReports(); break;
+                case 5: cout << "Logging out Admin...\n"; return;
+                default: cout << "Invalid choice.\n";
+            }
+        }
+    }
+
+    void manageUsers() {
+        while (true) {
+            cout << "\n--- Manage Users ---\n";
+            cout << "1. View All Users\n2. Add User\n3. Update User\n4. Delete User\n5. Back\n";
+            int choice = getValidatedChoice(1,5);
+
+            if (choice == 1) {
+                if (users.empty()) {
+                    cout << "No users found.\n";
+                } else {
+                    for (User* user : users) {
+                        user->displayUserInfo();
+                        cout << "------------------\n";
+                    }
+                }
+                Utility::pause();
+            } else if (choice == 2) {
+                registerUser();
+            } else if (choice == 3) {
+                cout << "Enter UserID to update: ";
+                string id; getline(cin, id);
+                User* user = findUserByID(id);
+                if (!user) {
+                    cout << "User not found.\n";
+                    Utility::pause();
+                    continue;
+                }
+                updateUser(user);
+            } else if (choice == 4) {
+                cout << "Enter UserID to delete: ";
+                string id; getline(cin, id);
+                if (deleteUser(id)) {
+                    cout << "User deleted.\n";
+                    logger.log("User deleted: " + id);
+                } else {
+                    cout << "User not found.\n";
+                }
+                Utility::pause();
+            } else {
+                break;
+            }
+        }
+    }
+
+    User* findUserByID(const string& id) {
+        for (User* u : users) {
+            if (u->getUserID() == id) return u;
+        }
+        return nullptr;
+    }
+
+    void updateUser(User* user) {
+        cout << "Updating user " << user->getUserID() << "\n";
+        cout << "Leave input blank to keep current value.\n";
+
+        cout << "Current Name: " << user->getName() << "\nNew Name: ";
+        string input; getline(cin, input);
+        if (!input.empty()) user->setName(input);
+
+        cout << "Current Contact: " << user->getContact() << "\nNew Contact: ";
+        getline(cin, input);
+        input = Utility::trim(input);
+        if (!input.empty()) {
+            if (Utility::isNumeric(input)) {
+                user->setContact(input);
+            } else {
+                cout << "Contact must be numeric. Keeping previous.\n";
+            }
+        }
+
+        
+        if (user->getRole() == "Donor") {
+            Donor* donor = dynamic_cast<Donor*>(user);
+            if (donor) {
+                cout << "Current Blood Type: " << donor->getBloodType() << "\nNew Blood Type: ";
+                getline(cin, input);
+                input = Utility::toUpper(Utility::trim(input));
+                if (!input.empty()) {
+                    if (Utility::isValidBloodType(input)) {
+                        donor->setBloodType(input);
+                    } else {
+                        cout << "Invalid blood type entered. Keeping previous.\n";
+                    }
+                }
+            }
+        }
+        cout << "User updated successfully.\n";
+        logger.log("User updated: " + user->getUserID());
+        saveUsers();
+        Utility::pause();
+    }
+
+    bool deleteUser(const string& id) {
+        for (auto it = users.begin(); it != users.end(); ++it) {
+            if ((*it)->getUserID() == id) {
+                delete *it;
+                users.erase(it);
+                saveUsers();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void manageBloodInventory() {
+        while (true) {
+            cout << "\n--- Manage Blood Inventory ---\n";
+            cout << "1. View Blood Inventory\n2. Add Blood Unit\n3. Update Blood Unit\n4. Delete Blood Unit\n5. Back\n";
+            int choice = getValidatedChoice(1,5);
+
+            if (choice == 1) {
+                if (bloodInventory.empty()) {
+                    cout << "Blood inventory is empty.\n";
+                } else {
+                    for (size_t i = 0; i < bloodInventory.size(); ++i) {
+                        cout << "Record #" << (i+1) << "\n";
+                        bloodInventory[i].displayBloodInfo();
+                        cout << "------------------\n";
+                    }
+                }
+                Utility::pause();
+            } else if (choice == 2) {
+                addBloodUnit();
+            } else if (choice == 3) {
+                updateBloodUnit();
+            } else if (choice == 4) {
+                deleteBloodUnit();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void addBloodUnit() {
+        cout << "Add Blood Unit\n";
+        string bloodType;
+        while (true) {
+            cout << "Enter Blood Type (A+, A-, B+, B-, AB+, AB-, O+, O-): ";
+            getline(cin, bloodType);
+            bloodType = Utility::toUpper(Utility::trim(bloodType));
+            if (Utility::isValidBloodType(bloodType)) break;
+            cout << "Invalid blood type. Try again.\n";
+        }
+
+        int quantity;
+        while (true) {
+            cout << "Enter Quantity (ml): ";
+            string qtyStr; getline(cin, qtyStr);
+            if (Utility::isNumeric(qtyStr)) {
+                quantity = stoi(qtyStr);
+                if (quantity > 0) break;
+            }
+            cout << "Invalid quantity. Must be positive integer.\n";
+        }
+
+        string date;
+        while (true) {
+            cout << "Enter Donation Date (YYYY-MM-DD): ";
+            getline(cin, date);
+            if (Utility::isValidDate(date)) break;
+            cout << "Invalid date format or value. Try again.\n";
+        }
+
+        string donorName;
+        cout << "Enter Donor Name: ";
+        getline(cin, donorName);
+
+        bloodInventory.emplace_back(bloodType, quantity, date, donorName);
+        cout << "Blood unit added successfully.\n";
+        logger.log("Blood unit added: " + bloodType + " Qty: " + to_string(quantity) + " Donor: " + donorName);
+        saveBloodInventory();
+        Utility::pause();
+    }
+
+    void updateBloodUnit() {
+        if (bloodInventory.empty()) {
+            cout << "No blood units to update.\n";
+            Utility::pause();
+            return;
+        }
+        cout << "Enter record number to update (1 to " << bloodInventory.size() << "): ";
+        int rec = getValidatedChoice(1, bloodInventory.size());
+        BloodUnit& unit = bloodInventory[rec - 1];
+        cout << "Updating blood unit #" << rec << "\n";
+
+        cout << "Current Blood Type: " << unit.getBloodType() << "\nNew Blood Type: ";
+        string input; getline(cin, input);
+        input = Utility::toUpper(Utility::trim(input));
+        if (!input.empty() && Utility::isValidBloodType(input)) {
+            unit.setBloodType(input);
+        }
+
+        cout << "Current Quantity: " << unit.getQuantity() << "\nNew Quantity: ";
+        getline(cin, input);
+        if (!input.empty() && Utility::isNumeric(input)) {
+            int q = stoi(input);
+            if (q > 0) unit.setQuantity(q);
+        }
+
+        cout << "Current Donation Date: " << unit.getDonationDate() << "\nNew Donation Date: ";
+        getline(cin, input);
+        if (!input.empty() && Utility::isValidDate(input)) {
+            unit.setDonationDate(input);
+        }
+
+        cout << "Current Donor Name: " << unit.getDonorName() << "\nNew Donor Name: ";
+        getline(cin, input);
+        if (!input.empty()) {
+            unit.setDonorName(input);
+        }
+
+        cout << "Blood unit updated.\n";
+        logger.log("Blood unit updated: Record #" + to_string(rec));
+        saveBloodInventory();
+        Utility::pause();
+    }
+
+    void deleteBloodUnit() {
+        if (bloodInventory.empty()) {
+            cout << "No blood units to delete.\n";
+            Utility::pause();
+            return;
+        }
+        cout << "Enter record number to delete (1 to " << bloodInventory.size() << "): ";
+        int rec = getValidatedChoice(1, bloodInventory.size());
+        bloodInventory.erase(bloodInventory.begin() + (rec - 1));
+        cout << "Blood unit deleted.\n";
+        logger.log("Blood unit deleted: Record #" + to_string(rec));
+        saveBloodInventory();
+        Utility::pause();
+    }
+
+    void manageBloodRequests() {
+        while (true) {
+            cout << "\n--- Manage Blood Requests ---\n";
+            cout << "1. View All Requests\n2. Approve Request\n3. Reject Request\n4. Back\n";
+            int choice = getValidatedChoice(1,4);
+
+            if (choice == 1) {
+                if (bloodRequests.empty()) {
+                    cout << "No blood requests found.\n";
+                } else {
+                    for (const BloodRequest& req : bloodRequests) {
+                        req.displayRequestInfo();
+                        cout << "------------------\n";
+                    }
+                }
+                Utility::pause();
+            } else if (choice == 2) {
+                approveRequest();
+            } else if (choice == 3) {
+                rejectRequest();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void approveRequest() {
+        if (bloodRequests.empty()) {
+            cout << "No requests to approve.\n";
+            Utility::pause();
+            return;
+        }
+        cout << "Enter Request ID to approve: ";
+        string reqID; getline(cin, reqID);
+        BloodRequest* req = findRequestByID(reqID);
+        if (!req) {
+            cout << "Request not found.\n";
+            Utility::pause();
+            return;
+        }
+        if (req->getStatus() != "Pending") {
+            cout << "Request is already " << req->getStatus() << ".\n";
+            Utility::pause();
+            return;
+        }
+
+        int totalQty = 0;
+        for (const BloodUnit& unit : bloodInventory) {
+            if (unit.getBloodType() == req->getBloodType()) {
+                totalQty += unit.getQuantity();
+            }
+        }
+        if (totalQty < req->getQuantity()) {
+            cout << "Insufficient blood quantity in inventory.\n";
+            Utility::pause();
+            return;
+        }
+
+        int qtyToDeduct = req->getQuantity();
+        for (BloodUnit& unit : bloodInventory) {
+            if (unit.getBloodType() == req->getBloodType()) {
+                if (unit.getQuantity() >= qtyToDeduct) {
+                    unit.setQuantity(unit.getQuantity() - qtyToDeduct);
+                    qtyToDeduct = 0;
+                    break;
+                } else {
+                    qtyToDeduct -= unit.getQuantity();
+                    unit.setQuantity(0);
+                }
+            }
+        }
+
+        req->setStatus("Approved");
+        cout << "Request approved.\n";
+        logger.log("Request approved: " + reqID);
+        saveBloodInventory();
+        saveBloodRequests();
+        Utility::pause();
+    }
+
+    void rejectRequest() {
+        if (bloodRequests.empty()) {
+            cout << "No requests to reject.\n";
+            Utility::pause();
+            return;
+        }
+        cout << "Enter Request ID to reject: ";
+        string reqID; getline(cin, reqID);
+        BloodRequest* req = findRequestByID(reqID);
+        if (!req) {
+            cout << "Request not found.\n";
+            Utility::pause();
+            return;
+        }
+        if (req->getStatus() != "Pending") {
+            cout << "Request is already " << req->getStatus() << ".\n";
+            Utility::pause();
+            return;
+        }
+        req->setStatus("Rejected");
+        cout << "Request rejected.\n";
+        logger.log("Request rejected: " + reqID);
+        saveBloodRequests();
+        Utility::pause();
+    }
+
+    BloodRequest* findRequestByID(const string& reqID) {
+        for (BloodRequest& req : bloodRequests) {
+            if (req.getRequestID() == reqID) return &req;
+        }
+        return nullptr;
+    }
+
+    void viewReports() {
+        while (true) {
+            cout << "\n--- Reports ---\n";
+            cout << "1. Blood Inventory Summary\n2. User Summary\n3. Requests Summary\n4. Activity Log\n5. Back\n";
+            int choice = getValidatedChoice(1,5);
+
+            if (choice == 1) {
+                bloodInventorySummary();
+            } else if (choice == 2) {
+                userSummary();
+            } else if (choice == 3) {
+                requestsSummary();
+            } else if (choice == 4) {
+                viewActivityLog();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void bloodInventorySummary() {
+        cout << "\n--- Blood Inventory Summary ---\n";
+        map<string, int> bloodCount;
+        for (const string& bt : VALID_BLOOD_TYPES) bloodCount[bt] = 0;
+        for (const BloodUnit& unit : bloodInventory) {
+            bloodCount[unit.getBloodType()] += unit.getQuantity();
+        }
+        for (const auto& pair : bloodCount) {
+            cout << pair.first << ": " << pair.second << " ml\n";
+        }
+        Utility::pause();
+    }
+
+    void userSummary() {
+        cout << "\n--- User Summary ---\n";
+        map<string, int> roleCount;
+        for (const string& role : VALID_ROLES) roleCount[role] = 0;
+        for (const User* user : users) {
+            roleCount[user->getRole()]++;
+        }
+        for (const auto& pair : roleCount) {
+            cout << pair.first << "s: " << pair.second << "\n";
+        }
+        Utility::pause();
+    }
+
+    void requestsSummary() {
+        cout << "\n--- Requests Summary ---\n";
+        map<string, int> statusCount;
+        statusCount["Pending"] = 0;
+        statusCount["Approved"] = 0;
+        statusCount["Rejected"] = 0;
+        for (const BloodRequest& req : bloodRequests) {
+            statusCount[req.getStatus()]++;
+        }
+        for (const auto& pair : statusCount) {
+            cout << pair.first << ": " << pair.second << "\n";
+        }
+        Utility::pause();
+    }
+
+    void viewActivityLog() {
+        cout << "\n--- Activity Log ---\n";
+        logger.displayLogs();
+        Utility::pause();
+    }
+
+
+    void donorMenu() {
+        while (true) {
+            cout << "\n--- Donor Menu ---\n";
+            cout << "1. View My Profile\n2. Update Profile\n3. View Blood Inventory\n4. Donate Blood\n5. Logout\n";
+            int choice = getValidatedChoice(1,5);
+            if (choice == 1) {
+                currentUser->displayUserInfo();
+                Utility::pause();
+            } else if (choice == 2) {
+                updateUser(currentUser);
+            } else if (choice == 3) {
+                viewBloodInventory();
+            } else if (choice == 4) {
+                donateBlood();
+            } else {
+                cout << "Logging out Donor...\n";
+                break;
+            }
+        }
+    }
+
+    void donateBlood() {
+        cout << "--- Donate Blood ---\n";
+        Donor* donor = dynamic_cast<Donor*>(currentUser);
+        if (!donor) {
+            cout << "Error: Only donors can donate blood.\n";
+            Utility::pause();
+            return;
+        }
+        string bloodType = donor->getBloodType();
+        cout << "Your Blood Type: " << bloodType << endl;
+
+        int quantity;
+        while (true) {
+            cout << "Enter Quantity to Donate (ml): ";
+            string qtyStr; getline(cin, qtyStr);
+            if (Utility::isNumeric(qtyStr)) {
+                quantity = stoi(qtyStr);
+                if (quantity > 0) break;
+            }
+            cout << "Invalid quantity. Must be positive integer.\n";
+        }
+
+        string date = Utility::getCurrentDate();
+        string donorName = donor->getName(); 
+        bloodInventory.emplace_back(bloodType, quantity, date, donorName); 
+        cout << "Thank you for your donation!\n";
+        logger.log("Donor " + donor->getUserID() + " donated " + to_string(quantity) + "ml of " + bloodType);
+        saveBloodInventory();
+        Utility::pause();
+    }
+
+    void viewBloodInventory() {
+        if (bloodInventory.empty()) {
+            cout << "Blood inventory is empty.\n";
+        } else {
+            for (const BloodUnit& unit : bloodInventory) {
+                unit.displayBloodInfo();
+                cout << "------------------\n";
+            }
+        }
+        Utility::pause();
+    }
+
+    
+    void requestorMenu() {
+        while (true) {
+            cout << "\n--- Requestor Menu ---\n";
+            cout << "1. View My Profile\n2. Update Profile\n3. Make Blood Request\n4. View My Requests\n5. Logout\n";
+            int choice = getValidatedChoice(1,5);
+            if (choice == 1) {
+                currentUser->displayUserInfo();
+                Utility::pause();
+            } else if (choice == 2) {
+                updateUser(currentUser);
+            } else if (choice == 3) {
+                makeBloodRequest();
+            } else if (choice == 4) {
+                viewMyRequests();
+            } else {
+                cout << "Logging out Requestor...\n";
+                break;
+            }
+        }
+    }
+
+    void makeBloodRequest() {
+        cout << "--- Make Blood Request ---\n";
+        string bloodType;
+        while (true) {
+            cout << "Enter Blood Type (A+, A-, B+, B-, AB+, AB-, O+, O-): ";
+            getline(cin, bloodType);
+            bloodType = Utility::toUpper(Utility::trim(bloodType));
+            if (Utility::isValidBloodType(bloodType)) break;
+            cout << "Invalid blood type. Try again.\n";
+        }
+
+        int quantity;
+        while (true) {
+            cout << "Enter Quantity (ml): ";
+            string qtyStr; getline(cin, qtyStr);
+            if (Utility::isNumeric(qtyStr)) {
+                quantity = stoi(qtyStr);
+                if (quantity > 0) break;
+            }
+            cout << "Invalid quantity. Must be positive integer.\n";
+        }
+
+        string date;
+        while (true) {
+            cout << "Enter Request Date (YYYY-MM-DD): ";
+            getline(cin, date);
+            if (Utility::isValidDate(date)) break;
+            cout << "Invalid date format or value. Try again.\n";
+        }
+
+        string reqID = generateRequestID();
+        bloodRequests.emplace_back(reqID, currentUser->getUserID(), bloodType, quantity, date);
+        cout << "Blood request submitted. Request ID: " << reqID << "\n";
+        logger.log("New blood request: " + reqID + " by " + currentUser->getUserID());
+        saveBloodRequests();
+        Utility::pause();
+    }
+
+    void viewMyRequests() {
+        cout << "--- My Blood Requests ---\n";
+        bool found = false;
+        for (const BloodRequest& req : bloodRequests) {
+            if (req.getRequestorID() == currentUser->getUserID()) {
+                req.displayRequestInfo();
+                cout << "------------------\n";
+                found = true;
+            }
+        }
+        if (!found) cout << "You have no blood requests.\n";
+        Utility::pause();
+    }
+
+    
+    int getValidatedChoice(int min, int max) {
+        while (true) {
+            cout << "Enter choice (" << min << "-" << max << "): ";
+            string input; getline(cin, input);
+            if (Utility::isNumeric(input)) {
+                int choice = stoi(input);
+                if (choice >= min && choice <= max) return choice;
+            }
+            cout << "Invalid choice. Try again.\n";
+        }
+    }
+
+    string generateRequestID() {
+        static int counter = 1000;
+        return "REQ" + to_string(counter++);
+    }
+
+    void loadUsers() {
+        ifstream file(USERS_FILE);
+        if (!file.is_open()) return;
+        string line;
+        while (getline(file, line)) {
+            
+            vector<string> tokens = Utility::split(line, '|');
+            if (tokens.size() < 5) continue;
+            string id = tokens[0];
+            string name = tokens[1];
+            string contact = tokens[2];
+            string pass = tokens[3];
+            string role = tokens[4];
+            if (role == "Donor" && tokens.size() == 6) {
+                string bloodType = tokens[5];
+                users.push_back(new Donor(id, name, contact, pass, bloodType));
+            } else {
+                users.push_back(new User(id, name, contact, pass, role));
+            }
+        }
+        file.close();
+    }
+
+    void saveUsers() {
+        ofstream file(USERS_FILE);
+        for (User* user : users) {
+            file << user->getUserID() << "|" << user->getName() << "|" << user->getContact() << "|" << user->getPassword() << "|" << user->getRole();
+            if (user->getRole() == "Donor") {
+                Donor* donor = dynamic_cast<Donor*>(user);
+                if (donor) {
+                    file << "|" << donor->getBloodType();
+                }
+            }
+            file << endl;
+        }
+        file.close();
+    }
+        void loadBloodInventory() {
+    ifstream file(BLOOD_FILE);
+    if (!file.is_open()) return;
+    string line;
+    while (getline(file, line)) {
+        vector<string> tokens = Utility::split(line, '|');
+        if (tokens.size() != 4) continue; 
+        string bloodType = tokens[0];
+        int qty = stoi(tokens[1]);
+        string date = tokens[2];
+        string donorName = tokens[3];
+        bloodInventory.emplace_back(bloodType, qty, date, donorName);
+    }
+    file.close();
+}
+
+    void saveBloodInventory() {
+    ofstream file(BLOOD_FILE);
+    for (const BloodUnit& unit : bloodInventory) {
+        file << unit.getBloodType() << "|" << unit.getQuantity() << "|" << unit.getDonationDate()
+             << "|" << unit.getDonorName() << "\n"; 
+    }
+    file.close();
+}
+
+    void loadBloodRequests() {
+        ifstream file(REQUESTS_FILE);
+        if (!file.is_open()) return;
+        string line;
+        while (getline(file, line)) {
+            vector<string> tokens = Utility::split(line, '|');
+            if (tokens.size() != 6) continue;
+            string reqID = tokens[0];
+            string reqorID = tokens[1];
+            string bloodType = tokens[2];
+            int qty = stoi(tokens[3]);
+            string reqDate = tokens[4];
+            string status = tokens[5];
+            bloodRequests.emplace_back(reqID, reqorID, bloodType, qty, reqDate, status);
+        }
+        file.close();
+    }
+
+    void saveBloodRequests() {
+        ofstream file(REQUESTS_FILE);
+        for (const BloodRequest& req : bloodRequests) {
+            file << req.getRequestID() << "|" << req.getRequestorID() << "|" << req.getBloodType() << "|"
+                 << req.getQuantity() << "|" << req.getRequestDate() << "|" << req.getStatus() << "\n";
+        }
+        file.close();
+    }
+
+    void saveAllData() {
+        saveUsers();
+        saveBloodInventory();
+        saveBloodRequests();
+    }
 };
 
+
 int main() {
-    try {
-        BloodBankSystem bbs;
-        string userID, name, contact, bloodType, requestID, status, requestDate, password;
-        int quantity, choice;
-
-        bool running = true;
-        bool mainMenuShown = false; 
-
-        while (running) {
-            bbs.removeExpiredBlood();
-
-            if (bbs.getLoggedInUser() == nullptr) {
-                if (mainMenuShown) break; // Exit after showing main menu once
-                mainMenuShown = true;     
-
-                cout << "\n--- Blood Bank Management System ---\n";
-                cout << "1. Login\n";
-                cout << "2. Register as Requestor\n";
-                cout << "3. Register as Donor\n";
-                cout << "0. Exit\n";
-                cout << "Enter your choice: ";
-                
-                try {
-                    choice = Validation::getIntegerInput();
-
-                    switch (choice) {
-                        case 1: {
-                            userID = Validation::getStringInput("Enter User ID: ");
-                            if (!Validation::isAlphanumeric(userID)) {
-                                throw ValidationException("Invalid User ID format - must be alphanumeric");
-                            }
-                            password = Validation::getPasswordInput("Enter Password: ");
-                            
-                            if (bbs.loginUser(userID, password)) {
-                                cout << "Logged in successfully!\n";
-                            } else {
-                                throw AuthenticationException("Invalid credentials");
-                            }
-                            break;
-                        }
-                        case 2: { // Register Requestor
-                            userID = Validation::getStringInput("Enter Requestor ID: ");
-                            if (!Validation::isAlphanumeric(userID)) {
-                                throw ValidationException("Invalid Requestor ID format - must be alphanumeric");
-                            }
-                            name = Validation::getStringInput("Enter Name: ");
-                            if (!Validation::isValidString(name)) {
-                                throw ValidationException("Invalid name");
-                            }
-                            contact = Validation::getStringInput("Enter Contact: ");
-                            if (!Validation::isValidString(contact)) {
-                                throw ValidationException("Invalid contact");
-                            }
-                            password = Validation::getPasswordInput("Enter Password (min 6 chars, must include uppercase, lowercase and digit): ");
-                            if (!Validation::isValidPassword(password)) {
-                                throw ValidationException("Invalid password format");
-                            }
-                            
-                            if (bbs.registerRequestor(userID, name, contact, password)) {
-                                cout << "Requestor registered successfully!\n";
-                            } else {
-                                throw ValidationException("Registration failed - ID may already exist");
-                            }
-                            break;
-                        }
-                        case 3: { // Register Donor
-                            userID = Validation::getStringInput("Enter Donor ID: ");
-                            if (!Validation::isAlphanumeric(userID)) {
-                                throw ValidationException("Invalid Donor ID format - must be alphanumeric");
-                            }
-                            name = Validation::getStringInput("Enter Name: ");
-                            if (!Validation::isValidString(name)) {
-                                throw ValidationException("Invalid name");
-                            }
-                            contact = Validation::getStringInput("Enter Contact: ");
-                            if (!Validation::isValidString(contact)) {
-                                throw ValidationException("Invalid contact");
-                            }
-                            bloodType = Validation::getStringInput("Enter Blood Type (A+/A-/B+/B-/AB+/AB-/O+/O-): ");
-                            if (!Validation::isValidBloodType(bloodType)) {
-                                throw ValidationException("Invalid blood type");
-                            }
-                            password = Validation::getPasswordInput("Enter Password (min 6 chars, must include uppercase, lowercase and digit): ");
-                            if (!Validation::isValidPassword(password)) {
-                                throw ValidationException("Invalid password format");
-                            }
-                            
-                            if (bbs.addDonor(userID, name, contact, bloodType, password)) {
-                                cout << "Donor registered successfully!\n";
-                            } else {
-                                throw ValidationException("Registration failed - ID may already exist");
-                            }
-                            break;
-                        }
-                        case 0:
-                            running = false;
-                            cout << "Thank you for using Blood Bank System!\n";
-                            break;
-                        default:
-                            throw ValidationException("Invalid choice");
-                    }
-                }
-                catch (const ValidationException& e) {
-                    cerr << "Validation Error: " << e.what() << endl;
-                }
-                catch (const AuthenticationException& e) {
-                    cerr << "Authentication Error: " << e.what() << endl;
-                }
-                catch (const exception& e) {
-                    cerr << "Error: " << e.what() << endl;
-                }
-            } else {
-                string role = bbs.getLoggedInUser()->getRole();
-                
-                if (role == "Admin") {
-                    // ... Admin menu implementation (your existing code) ...
-                }
-                else if (role == "Donor") {
-                    try {
-                        cout << "\n--- Donor Menu ---\n";
-                        cout << "1. View My Information\n";
-                        cout << "2. Update My Information\n";
-                        cout << "3. Donate Blood\n";
-                        cout << "4. View My Donations\n";
-                        cout << "5. Logout\n";
-                        cout << "Enter your choice: ";
-                        
-                        choice = Validation::getIntegerInput();
-                        
-                        switch (choice) {
-                            case 1: {
-                                bbs.getLoggedInUser()->displayUserInfo();
-                                break;
-                            }
-                            case 2: {
-                                string newName = Validation::getStringInput("Enter new name: ");
-                                string newContact = Validation::getStringInput("Enter new contact: ");
-                                string newBloodType = Validation::getStringInput("Enter new blood type (A+/A-/B+/B-/AB+/AB-/O+/O-): ");
-                                
-                                if (!Validation::isValidBloodType(newBloodType)) {
-                                    throw ValidationException("Invalid blood type");
-                                }
-                                
-                                if (bbs.updateDonor(bbs.getLoggedInUser()->getUserID(), newName, newContact, newBloodType)) {
-                                    cout << "Information updated successfully!\n";
-                                } else {
-                                    throw ValidationException("Failed to update information");
-                                }
-                                break;
-                            }
-                            case 3: {
-                                string bloodType = Validation::getStringInput("Enter blood type to donate (A+/A-/B+/B-/AB+/AB-/O+/O-): ");
-                                if (!Validation::isValidBloodType(bloodType)) {
-                                    throw ValidationException("Invalid blood type");
-                                }
-                                
-                                std::cout << "Enter quantity (in units): ";
-                                int quantity = Validation::getIntegerInput();
-                                if (!Validation::isValidInteger(quantity) || quantity <= 0) {
-                                    throw ValidationException("Invalid quantity");
-                                }
-                                
-                                string donationDate = bbs.getCurrentDate();
-                                
-                                if (bbs.addBlood(bloodType, quantity, donationDate)) {
-                                    cout << "Blood donation recorded successfully!\n";
-                                } else {
-                                    throw ValidationException("Failed to record blood donation");
-                                }
-                                break;
-                            }
-                            case 4: {
-                                cout << "--- My Donations ---\n";
-                                bbs.viewBloodInventory(); // You might want to create a method to view only specific donor's donations
-                                break;
-                            }
-                            case 5: {
-                                bbs.logoutUser();
-                                cout << "Logged out successfully!\n";
-                                break;
-                            }
-                            default:
-                                throw ValidationException("Invalid choice");
-                        }
-                    }
-                    catch (const ValidationException& e) {
-                        cerr << "Error: " << e.what() << endl;
-                    }
-                    break;
-                }
-                else if (role == "Requestor") {
-                    try {
-                        cout << "\n--- Requestor Menu ---\n";
-                        cout << "1. View My Information\n";
-                        cout << "2. Update My Information\n";
-                        cout << "3. Make Blood Request\n";
-                        cout << "4. View My Requests\n";
-                        cout << "5. Logout\n";
-                        cout << "Enter your choice: ";
-                        
-                        choice = Validation::getIntegerInput();
-                        
-                        switch (choice) {
-                            case 1: {
-                                bbs.getLoggedInUser()->displayUserInfo();
-                                break;
-                            }
-                            case 2: {
-                                string newName = Validation::getStringInput("Enter new name: ");
-                                string newContact = Validation::getStringInput("Enter new contact: ");
-                                
-                                if (bbs.updateUser(bbs.getLoggedInUser()->getUserID(), newName, newContact)) {
-                                    cout << "Information updated successfully!\n";
-                                } else {
-                                    throw ValidationException("Failed to update information");
-                                }
-                                break;
-                            }
-                            case 3: {
-                                string bloodType = Validation::getStringInput("Enter required blood type (A+/A-/B+/B-/AB+/AB-/O+/O-): ");
-                                if (!Validation::isValidBloodType(bloodType)) {
-                                    throw ValidationException("Invalid blood type");
-                                }
-                                
-                                std::cout << "Enter quantity needed (in units): ";
-                                int quantity = Validation::getIntegerInput();
-                                if (!Validation::isValidInteger(quantity) || quantity <= 0) {
-                                    throw ValidationException("Invalid quantity");
-                                }
-                                
-                                string requestDate = bbs.getCurrentDate();
-                                
-                                if (bbs.addRequest(bbs.getLoggedInUser()->getUserID(), bloodType, quantity, requestDate)) {
-                                    cout << "Blood request submitted successfully!\n";
-                                } else {
-                                    throw ValidationException("Failed to submit blood request");
-                                }
-                                break;
-                            }
-                            case 4: {
-                                cout << "--- My Requests ---\n";
-                                bbs.viewRequestsByRequestor(bbs.getLoggedInUser()->getUserID());
-                                break;
-                            }
-                            case 5: {
-                                bbs.logoutUser();
-                                cout << "Logged out successfully!\n";
-                                break;
-                            }
-                            default:
-                                throw ValidationException("Invalid choice");
-                        }
-                    }
-                    catch (const ValidationException& e) {
-                        cerr << "Error: " << e.what() << endl;
-                    }
-                }
-            }
-        }
-    }
-    catch (const exception& e) {
-        cerr << "Fatal Error: " << e.what() << endl;
-        return 1;
-    }
+    BloodBankSystem system;
+    system.run();
     return 0;
-}
-
-namespace Validation {
-    bool isValidString(const std::string& str) {
-        return !str.empty();
-    }
-
-    bool isAlphanumeric(const std::string& str) {
-        if (str.empty()) return false;
-        for (char c : str) {
-            if (!std::isalnum(static_cast<unsigned char>(c))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool isValidInteger(int value) {
-        return value >= 0;
-    }
-
-    bool isValidDate(const std::string& date) {
-        if (date.length() != 10) return false;
-        if (date[4] != '-' || date[7] != '-') return false;
-        for (int i = 0; i < 4; ++i) {
-            if (!std::isdigit(static_cast<unsigned char>(date[i]))) return false;
-        }
-        for (int i = 5; i < 7; ++i) {
-            if (!std::isdigit(static_cast<unsigned char>(date[i]))) return false;
-        }
-        for (int i = 8; i < 10; ++i) {
-            if (!std::isdigit(static_cast<unsigned char>(date[i]))) return false;
-        }
-        int year = std::stoi(date.substr(0, 4));
-        int month = std::stoi(date.substr(5, 2));
-        int day = std::stoi(date.substr(8, 2));
-        if (year < 1900 || year > 2100) return false;
-        if (month < 1 || month > 12) return false;
-        if (day < 1 || day > 31) return false;
-        return true;
-    }
-
-    bool isValidBloodType(const std::string& bloodType) {
-        if (bloodType.length() < 2 || bloodType.length() > 3) return false;
-        std::string upperBloodType = bloodType;
-        for (char &c : upperBloodType) {
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        }
-        return (upperBloodType == "A+" || upperBloodType == "A-" ||
-                upperBloodType == "B+" || upperBloodType == "B-" ||
-                upperBloodType == "AB+" || upperBloodType == "AB-" ||
-                upperBloodType == "O+" || upperBloodType == "O-");
-    }
-
-    bool isValidPassword(const std::string& password) {
-        if (password.length() < 6) return false;
-        bool hasUpper = false;
-        bool hasLower = false;
-        bool hasDigit = false;
-        for (char c : password) {
-            if (std::isupper(static_cast<unsigned char>(c))) hasUpper = true;
-            if (std::islower(static_cast<unsigned char>(c))) hasLower = true;
-            if (std::isdigit(static_cast<unsigned char>(c))) hasDigit = true;
-        }
-        return hasUpper && hasLower && hasDigit;
-    }
-
-    void clearInputBuffer() {
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        std::cin.clear();
-    }
-
-    int getIntegerInput() {
-        int value;
-        while (!(std::cin >> value)) {
-            std::cout << "Invalid input. Please enter an integer: ";
-            clearInputBuffer();
-        }
-        clearInputBuffer();
-        return value;
-    }
-
-    std::string getStringInput(const std::string& prompt) {
-        std::string input;
-        while (true) {
-            std::cout << prompt;
-            std::getline(std::cin, input);
-            if (!input.empty()) break;
-            std::cout << "Input cannot be empty. Please try again.\n";
-        }
-        return input;
-    }
-
-    std::string getPasswordInput(const std::string& prompt) {
-        std::string password;
-        while (true) {
-            std::cout << prompt;
-            std::getline(std::cin, password);
-            if (isValidPassword(password)) break;
-            std::cout << "Password must be at least 6 characters with at least one uppercase, one lowercase letter and one digit.\n";
-        }
-        return password;
-    }
-}
-
-User::User(const std::string& id, const std::string& n, const std::string& c, const std::string& r, const std::string& p)
-    : userID(id), name(n), contact(c), role(r), password(p) {}
-
-std::string User::getUserID() const { return userID; }
-std::string User::getName() const { return name; }
-std::string User::getContact() const { return contact; }
-std::string User::getRole() const { return role; }
-
-bool User::authenticate(const std::string& pwd) const {
-    return password == pwd;
-}
-
-bool User::setUserID(const std::string& id) {
-    if (Validation::isAlphanumeric(id)) {
-        userID = id;
-        return true;
-    }
-    return false;
-}
-
-bool User::setName(const std::string& n) {
-    if (Validation::isValidString(n)) {
-        name = n;
-        return true;
-    }
-    return false;
-}
-
-bool User::setContact(const std::string& c) {
-    if (Validation::isValidString(c)) {
-        contact = c;
-        return true;
-    }
-    return false;
-}
-
-bool User::setRole(const std::string& r) {
-    if (Validation::isValidString(r)) {
-        role = r;
-        return true;
-    }
-    return false;
-}
-
-bool User::setPassword(const std::string& pwd) {
-    if (Validation::isValidPassword(pwd)) {
-        password = pwd;
-        return true;
-    }
-    return false;
-}
-
-Donor::Donor(const std::string& id, const std::string& n, const std::string& c, const std::string& bt, const std::string& p)
-    : User(id, n, c, "Donor", p), bloodType(bt) {}
-
-std::string Donor::getBloodType() const { return bloodType; }
-
-bool Donor::setBloodType(const std::string& bt) {
-    if (Validation::isValidBloodType(bt)) {
-        bloodType = bt;
-        return true;
-    }
-    return false;
-}
-
-void Donor::displayUserInfo() const {
-    std::cout << "User ID: " << userID << ", Name: " << name << ", Contact: " << contact << ", Role: " << role << std::endl;
-    std::cout << "Blood Type: " << bloodType << std::endl;
-}
-
-AdminStaff::AdminStaff(const std::string& id, const std::string& n, const std::string& c, const std::string& p)
-    : User(id, n, c, "Admin", p) {}
-
-void AdminStaff::displayUserInfo() const {
-    std::cout << "User ID: " << userID << ", Name: " << name << ", Contact: " << contact << ", Role: " << role << std::endl;
-}
-
-Requestor::Requestor(const std::string& id, const std::string& n, const std::string& c, const std::string& p)
-    : User(id, n, c, "Requestor", p) {}
-
-void Requestor::displayUserInfo() const {
-    std::cout << "User ID: " << userID << ", Name: " << name << ", Contact: " << contact << ", Role: " << role << std::endl;
-}
-
-BloodInventory::BloodInventory(const std::string& bt, int qty, const std::string& dd)
-    : bloodType(bt), quantity(qty), donationDate(dd) {}
-
-std::string BloodInventory::getBloodType() const { return bloodType; }
-int BloodInventory::getQuantity() const { return quantity; }
-std::string BloodInventory::getDonationDate() const { return donationDate; }
-
-bool BloodInventory::setBloodType(const std::string& bt) {
-    if (Validation::isValidBloodType(bt)) {
-        bloodType = bt;
-        return true;
-    }
-    return false;
-}
-
-bool BloodInventory::setQuantity(int qty) {
-    if (Validation::isValidInteger(qty)) {
-        quantity = qty;
-        return true;
-    }
-    return false;
-}
-
-bool BloodInventory::setDonationDate(const std::string& dd) {
-    if (Validation::isValidDate(dd)) {
-        donationDate = dd;
-        return true;
-    }
-    return false;
-}
-
-void BloodInventory::increaseQuantity(int qty) {
-    if(Validation::isValidInteger(qty) && qty > 0)
-        quantity += qty;
-}
-
-void BloodInventory::decreaseQuantity(int qty) {
-    if (Validation::isValidInteger(qty) && qty > 0) {
-        if (quantity >= qty) {
-            quantity -= qty;
-        } else {
-            quantity = 0;
-        }
-    }
-}
-
-void BloodInventory::displayBloodInfo() const {
-    std::cout << "Blood Type: " << bloodType << ", Quantity: " << quantity << ", Donation Date: " << donationDate << std::endl;
-}
-
-bool BloodInventory::isExpired(const std::string& currentDate) const {
-    if (!Validation::isValidDate(currentDate) || !Validation::isValidDate(donationDate))
-        return false;
-
-    int donationYear = std::stoi(donationDate.substr(0, 4));
-    int donationMonth = std::stoi(donationDate.substr(5, 2));
-    int donationDay = std::stoi(donationDate.substr(8, 2));
-
-    int currentYear = std::stoi(currentDate.substr(0, 4));
-    int currentMonth = std::stoi(currentDate.substr(5, 2));
-    int currentDay = std::stoi(currentDate.substr(8, 2));
-
-    int daysSinceDonation = (currentYear - donationYear) * 365 +
-                            (currentMonth - donationMonth) * 30 +
-                            (currentDay - donationDay);
-
-    return daysSinceDonation > 42;
-}
-
-BloodRequest::BloodRequest(const std::string& id, const std::string& reqID, const std::string& bt, int qty, const std::string& rd)
-    : requestID(id), requestorID(reqID), bloodType(bt), quantity(qty), status("Pending"), requestDate(rd) {}
-
-std::string BloodRequest::getRequestID() const { return requestID; }
-std::string BloodRequest::getRequestorID() const { return requestorID; }
-std::string BloodRequest::getBloodType() const { return bloodType; }
-int BloodRequest::getQuantity() const { return quantity; }
-std::string BloodRequest::getStatus() const { return status; }
-std::string BloodRequest::getRequestDate() const { return requestDate; }
-
-bool BloodRequest::setStatus(const std::string& st) {
-    if (st == "Pending" || st == "Fulfilled" || st == "Cancelled") {
-        status = st;
-        return true;
-    }
-    return false;
-}
-
-bool BloodRequest::setBloodType(const std::string& bt) {
-    if (Validation::isValidBloodType(bt)) {
-        bloodType = bt;
-        return true;
-    }
-    return false;
-}
-
-bool BloodRequest::setQuantity(int qty) {
-    if (Validation::isValidInteger(qty)) {
-        quantity = qty;
-        return true;
-    }
-    return false;
-}
-
-bool BloodRequest::setRequestDate(const std::string& rd) {
-    if (Validation::isValidDate(rd)) {
-        requestDate = rd;
-        return true;
-    }
-    return false;
-}
-
-void BloodRequest::displayRequestInfo() const {
-    std::cout << "Request ID: " << requestID
-              << ", Requestor ID: " << requestorID
-              << ", Blood Type: " << bloodType
-              << ", Quantity: " << quantity
-              << ", Status: " << status
-              << ", Request Date: " << requestDate
-              << std::endl;
-}
-
-UserManager::UserManager() : users() {}
-
-UserManager::~UserManager() {
-    for (User* user : users) {
-        delete user;
-    }
-    users.clear();
-}
-
-bool UserManager::addUser(const std::string& role, const std::string& id, const std::string& name, const std::string& contact, const std::string& password, const std::string& bloodType) {
-    if (getUserByID(id) != nullptr) {
-        return false;
-    }
-    if (role == "Donor") {
-        Donor* newDonor = new Donor(id, name, contact, bloodType, password);
-        if (!newDonor->setUserID(id) || !newDonor->setName(name) || !newDonor->setContact(contact) || !newDonor->setBloodType(bloodType) || !newDonor->setPassword(password)) {
-            delete newDonor;
-            return false;
-        }
-        users.push_back(newDonor);
-        return true;
-    } else if (role == "Admin") {
-        AdminStaff* newAdmin = new AdminStaff(id, name, contact, password);
-        if (!newAdmin->setUserID(id) || !newAdmin->setName(name) || !newAdmin->setContact(contact) || !newAdmin->setPassword(password)) {
-            delete newAdmin;
-            return false;
-        }
-        users.push_back(newAdmin);
-        return true;
-    } else if (role == "Requestor") {
-        Requestor* newRequestor = new Requestor(id, name, contact, password);
-        if (!newRequestor->setUserID(id) || !newRequestor->setName(name) || !newRequestor->setContact(contact) || !newRequestor->setPassword(password)) {
-            delete newRequestor;
-            return false;
-        }
-        users.push_back(newRequestor);
-        return true;
-    }
-    else {
-        return false;
-    }
-}
-
-User* UserManager::getUserByID(const std::string& id) {
-    for (User* user : users) {
-        if (user->getUserID() == id) {
-            return user;
-        }
-    }
-    return nullptr;
-}
-
-std::vector<User*> UserManager::getUsersByRole(const std::string& role) const {
-    std::vector<User*> result;
-    for (User* user : users) {
-        if (user->getRole() == role) {
-            result.push_back(user);
-        }
-    }
-    return result;
-}
-
-void UserManager::displayAllUsers() const {
-    if (users.empty()) {
-        std::cout << "No users to display." << std::endl;
-        return;
-    }
-    for (const auto& user : users) {
-        user->displayUserInfo();
-    }
-}
-
-bool UserManager::updateUser(const std::string& id, const std::string& newName, const std::string& newContact) {
-    User* user = getUserByID(id);
-    if (user) {
-        bool validName = user->setName(newName);
-        bool validContact = user->setContact(newContact);
-        return validName && validContact;
-    }
-    return false;
-}
-
-bool UserManager::deleteUser(const std::string& id) {
-    for (auto it = users.begin(); it != users.end(); ++it) {
-        if ((*it)->getUserID() == id) {
-            delete *it;
-            users.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-BloodBankSystem::BloodBankSystem() : loggedInUser(nullptr) {}
-
-bool BloodBankSystem::addDonor(const std::string& id, const std::string& name, const std::string& contact, const std::string& bloodType, const std::string& password) {
-    return userManager.addUser("Donor", id, name, contact, password, bloodType);
-}
-
-void BloodBankSystem::viewDonors() const {
-    std::vector<User*> donors = userManager.getUsersByRole("Donor");
-    if (donors.empty()) {
-        std::cout << "No donors found.\n";
-        return;
-    }
-    std::cout << "--- Donor List ---\n";
-    for (const auto& donor : donors) {
-        donor->displayUserInfo();
-    }
-}
-
-void BloodBankSystem::searchDonorsByBloodType(const std::string& bloodType) const {
-    if (!Validation::isValidBloodType(bloodType)) {
-        std::cout << "Invalid blood type.\n";
-        return;
-    }
-    std::cout << "--- Donors with Blood Type " << bloodType << " ---\n";
-    bool found = false;
-    std::vector<User*> donors = userManager.getUsersByRole("Donor");
-    for (const auto& donor : donors) {
-        Donor* d = dynamic_cast<Donor*>(donor);
-        if (d && d->getBloodType() == bloodType) {
-            d->displayUserInfo();
-            found = true;
-        }
-    }
-    if (!found) {
-        std::cout << "No donors found with blood type " << bloodType << ".\n";
-    }
-}
-
-void BloodBankSystem::searchDonorsByName(const std::string& name) const {
-    if (!Validation::isValidString(name)) {
-        std::cout << "Invalid name.\n";
-        return;
-    }
-    std::cout << "--- Donors with Name containing " << name << " ---\n";
-    bool found = false;
-    std::vector<User*> donors = userManager.getUsersByRole("Donor");
-    for (const auto& donor : donors) {
-        if (donor->getName().find(name) != std::string::npos) {
-            donor->displayUserInfo();
-            found = true;
-        }
-    }
-    if (!found) {
-        std::cout << "No donors found with name containing " << name << ".\n";
-    }
-}
-
-bool BloodBankSystem::updateDonor(const std::string& id, const std::string& newName, const std::string& newContact, const std::string& newBloodType) {
-    User* user = userManager.getUserByID(id);
-    if (user && user->getRole() == "Donor") {
-        Donor* donor = dynamic_cast<Donor*>(user);
-        if (donor) {
-            bool validName = donor->setName(newName);
-            bool validContact = donor->setContact(newContact);
-            bool validBloodType = donor->setBloodType(newBloodType);
-            return validName && validContact && validBloodType;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::deleteDonor(const std::string& id) {
-    return userManager.deleteUser(id);
-}
-
-bool BloodBankSystem::addBlood(const std::string& bloodType, int quantity, const std::string& donationDate) {
-    if (!Validation::isValidBloodType(bloodType) || !Validation::isValidInteger(quantity) || !Validation::isValidDate(donationDate)) {
-        return false;
-    }
-    bloodInventory.emplace_back(bloodType, quantity, donationDate);
-    return true;
-}
-
-void BloodBankSystem::viewBloodInventory() const {
-    if (bloodInventory.empty()) {
-        std::cout << "Blood inventory is empty.\n";
-        return;
-    }
-    std::cout << "--- Blood Inventory ---\n";
-    for (const auto& blood : bloodInventory) {
-        blood.displayBloodInfo();
-    }
-}
-
-void BloodBankSystem::viewBloodAvailability(const std::string& bloodType) const {
-    if (!Validation::isValidBloodType(bloodType)) {
-        std::cout << "Invalid blood type.\n";
-        return;
-    }
-    std::cout << "--- Blood Availability for " << bloodType << " ---\n";
-    bool found = false;
-    for (const auto& blood : bloodInventory) {
-        if (blood.getBloodType() == bloodType) {
-            std::cout << "Quantity: " << blood.getQuantity() << " units\n";
-            found = true;
-        }
-    }
-    if (!found) {
-        std::cout << "Blood type " << bloodType << " not found in inventory.\n";
-    }
-}
-
-bool BloodBankSystem::updateBloodStock(const std::string& bloodType, int quantityChange) {
-    if (!Validation::isValidBloodType(bloodType) || !Validation::isValidInteger(quantityChange)) {
-        return false;
-    }
-    for (auto& blood : bloodInventory) {
-        if (blood.getBloodType() == bloodType) {
-            if (quantityChange > 0)
-                blood.increaseQuantity(quantityChange);
-            else
-                blood.decreaseQuantity(std::abs(quantityChange));
-            return true;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::deleteBlood(const std::string& bloodType, const std::string& donationDate) {
-    if (!Validation::isValidBloodType(bloodType) || !Validation::isValidDate(donationDate)) {
-        return false;
-    }
-    for (auto it = bloodInventory.begin(); it != bloodInventory.end(); ++it) {
-        if (it->getBloodType() == bloodType && it->getDonationDate() == donationDate) {
-            bloodInventory.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::addRequest(const std::string& requestorID, const std::string& bloodType, int quantity, const std::string& requestDate) {
-    if (!Validation::isValidBloodType(bloodType) || !Validation::isValidInteger(quantity) || !Validation::isValidDate(requestDate)) {
-        return false;
-    }
-    if (!isBloodAvailable(bloodType, quantity)) {
-        std::cout << "Insufficient blood stock to fulfill this request.\n";
-        return false;
-    }
-    std::string requestID = "REQ-" + std::to_string(bloodRequests.size() + 1);
-    bloodRequests.emplace_back(requestID, requestorID, bloodType, quantity, requestDate);
-    return true;
-}
-
-void BloodBankSystem::viewRequests() const {
-    if (bloodRequests.empty()) {
-        std::cout << "No blood requests found.\n";
-        return;
-    }
-    std::cout << "--- Blood Requests ---\n";
-    for (const auto& request : bloodRequests) {
-        request.displayRequestInfo();
-    }
-}
-
-void BloodBankSystem::viewRequestsByStatus(const std::string& status) const {
-    if (status != "Pending" && status != "Fulfilled" && status != "Cancelled") {
-        std::cout << "Invalid status.\n";
-        return;
-    }
-    std::cout << "--- Blood Requests with Status: " << status << " ---\n";
-    bool found = false;
-    for (const auto& request : bloodRequests) {
-        if (request.getStatus() == status) {
-            request.displayRequestInfo();
-            found = true;
-        }
-    }
-    if (!found) {
-        std::cout << "No requests found with status: " << status << ".\n";
-    }
-}
-
-void BloodBankSystem::viewRequestsByRequestor(const std::string& requestorId) const {
-    if (!Validation::isAlphanumeric(requestorId)) {
-        std::cout << "Invalid Requestor ID.\n";
-        return;
-    }
-    std::cout << "--- Blood Requests for Requestor: " << requestorId << " ---\n";
-    bool found = false;
-    for (const auto& request : bloodRequests) {
-        if (request.getRequestorID() == requestorId) {
-            request.displayRequestInfo();
-            found = true;
-        }
-    }
-    if (!found) {
-        std::cout << "No requests found for requestor: " << requestorId << ".\n";
-    }
-}
-
-bool BloodBankSystem::updateRequestStatus(const std::string& requestID, const std::string& newStatus) {
-    if (newStatus != "Pending" && newStatus != "Fulfilled" && newStatus != "Cancelled") {
-        return false;
-    }
-    for (auto& request : bloodRequests) {
-        if (request.getRequestID() == requestID) {
-            request.setStatus(newStatus);
-            return true;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::updateRequest(const std::string& requestID, const std::string& newBloodType, int newQuantity, const std::string& newRequestDate) {
-    if (!Validation::isValidBloodType(newBloodType) || !Validation::isValidInteger(newQuantity) || !Validation::isValidDate(newRequestDate)) {
-        return false;
-    }
-    for (auto& request : bloodRequests) {
-        if (request.getRequestID() == requestID) {
-            request.setBloodType(newBloodType);
-            request.setQuantity(newQuantity);
-            request.setRequestDate(newRequestDate);
-            return true;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::deleteRequest(const std::string& requestID) {
-    for (auto it = bloodRequests.begin(); it != bloodRequests.end(); ++it) {
-        if (it->getRequestID() == requestID) {
-            bloodRequests.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-bool BloodBankSystem::addUser(const std::string& role, const std::string& id, const std::string& name, const std::string& contact, const std::string& password) {
-    return userManager.addUser(role, id, name, contact, password);
-}
-
-User* BloodBankSystem::getUserByID(const std::string& id) {
-    return userManager.getUserByID(id);
-}
-
-void BloodBankSystem::displayAllUsers() const {
-    userManager.displayAllUsers();
-}
-
-bool BloodBankSystem::updateUser(const std::string& id, const std::string& newName, const std::string& newContact) {
-    return userManager.updateUser(id, newName, newContact);
-}
-
-bool BloodBankSystem::deleteUser(const std::string& id) {
-    return userManager.deleteUser(id);
-}
-
-bool BloodBankSystem::loginUser(const std::string& id, const std::string& password) {
-    User* user = userManager.getUserByID(id);
-    if (user && user->authenticate(password)) {
-        loggedInUser = user;
-        return true;
-    }
-    return false;
-}
-
-void BloodBankSystem::logoutUser() {
-    loggedInUser = nullptr;
-}
-
-User* BloodBankSystem::getLoggedInUser() const {
-    return loggedInUser;
-}
-
-bool BloodBankSystem::registerRequestor(const std::string& id, const std::string& name, const std::string& contact, const std::string& password) {
-    return userManager.addUser("Requestor", id, name, contact, password);
-}
-
-bool BloodBankSystem::isBloodAvailable(const std::string& bloodType, int quantity) const {
-    for (const auto& blood : bloodInventory) {
-        if (blood.getBloodType() == bloodType && blood.getQuantity() >= quantity) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void BloodBankSystem::fulfillRequest(const std::string& requestID) {
-    for (auto& request : bloodRequests) {
-        if (request.getRequestID() == requestID) {
-            if (request.getStatus() != "Pending") {
-                std::cout << "Request is not pending.\n";
-                return;
-            }
-            if (isBloodAvailable(request.getBloodType(), request.getQuantity())) {
-                for (auto& blood : bloodInventory) {
-                    if (blood.getBloodType() == request.getBloodType()) {
-                        blood.decreaseQuantity(request.getQuantity());
-                        request.setStatus("Fulfilled");
-                        std::cout << "Request fulfilled successfully.\n";
-                        return;
-                    }
-                }
-            } else {
-                std::cout << "Insufficient blood stock to fulfill this request.\n";
-                return;
-            }
-        }
-    }
-    std::cout << "Request not found.\n";
-}
-
-void BloodBankSystem::removeExpiredBlood() {
-    std::string currentDate = getCurrentDate();
-    for (auto it = bloodInventory.begin(); it != bloodInventory.end();) {
-        if (it->isExpired(currentDate)) {
-            it = bloodInventory.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-std::string BloodBankSystem::getCurrentDate() {
-    time_t now = time(0);
-    tm* ltm = localtime(&now);
-    std::string year = std::to_string(1900 + ltm->tm_year);
-    std::string month = std::to_string(1 + ltm->tm_mon);
-    std::string day = std::to_string(ltm->tm_mday);
-
-    if (month.length() == 1) month = "0" + month;
-    if (day.length() == 1) day = "0" + day;
-
-    return year + "-" + month + "-" + day;
 }

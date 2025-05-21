@@ -1,0 +1,2 @@
+[2025-05-21] New user registered: 123 Role: Admin
+[2025-05-21] User 123 logged in.
